@@ -7,15 +7,30 @@ from sympy import isprime
 
 # implementation of https://oeis.org/A346642
 
+
 def remove_dup(seq):
     seen = set()
     return [x for x in seq if not (x in seen or seen.add(x))]
 
 
+def get_int(s, d=0):
+    try:
+        return int(s)
+    except:
+        return d
+
+
+def get_list(lst, i, d=None):
+    if i >= len(lst):
+        return d
+    return lst[i]
+
+
 prepend_items = [str(i) for i in range(1, 10)]
 append_items = [str(i) for i in range(1, 10, 2)]
 
-zeroes = "-z" in sys.argv and (int(sys.argv[sys.argv.index("-z")+1]) or inf)
+zeroes = "-z" in sys.argv and get_int(get_list(sys.argv,
+                                      sys.argv.index("-z")+1), inf)
 ancestors = "-a" in sys.argv
 
 # given an integer, generate all children of it that are prime
@@ -31,7 +46,7 @@ def get_prime_children(i: str):
     if zeroes:
         if zeroes == inf:
             yield "0" + i
-        elif len(list(takewhile(lambda x:x=="0",i))) < zeroes:
+        elif len(list(takewhile(lambda x: x == "0", i))) < zeroes:
             yield "0" + i
     if i[0] != "0":
         for j in append_items:
@@ -118,7 +133,7 @@ def main(n: int, out):
 
 # run using `python3 prime-nesting.py 100`
 # adding `-f` to the parameters makes the output go to file instead
-# adding `-z` means zeroes can be prepended
+# adding `-z` means zeroes can be prepended. if a number follows, up to that many zeroes are allowed
 # adding `-a` to the parameters means that the ancestors are generated. this is required for the following options
 # adding `-p` to the parameters makes all ancestors of the following number get output
 # adding `-l` to the parameters makes the program loop on stdin, letting the user input primes to get parents of
