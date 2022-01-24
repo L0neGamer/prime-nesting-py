@@ -127,4 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# my additions
 output.txt
+output*.txt
+profiling
+.vscode/

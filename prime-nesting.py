@@ -1,9 +1,12 @@
 from cmath import inf
 from itertools import takewhile
+from math import ceil
 from operator import index
 import sys
-from typing import Dict, List
+from typing import Dict, Generator, List, Tuple
 from sympy import isprime
+from tqdm import tqdm
+import multiprocessing as mp
 
 # implementation of https://oeis.org/A346642
 
@@ -26,11 +29,28 @@ def get_list(lst, i, d=None):
     return lst[i]
 
 
-prepend_items = [str(i) for i in range(1, 10)]
-append_items = [str(i) for i in range(1, 10, 2)]
+def combine_generators(gen1, gen2):
+    if gen1 is not None:
+        for i in gen1:
+            yield i
+    if gen2 is not None:
+        for i in gen2:
+            yield i
 
-zeroes = "-z" in sys.argv and get_int(get_list(sys.argv,
-                                      sys.argv.index("-z")+1), inf)
+
+def chunks(lst, n):
+    """
+    Yield successive n-sized chunks from lst.
+
+    from https://stackoverflow.com/a/312464/3050617
+    """
+    for i in range(0, len(lst), n):
+        yield lst[i : i + n]
+
+
+prepend_items = [str(i) for i in range(1, 10)]
+append_items = [str(i) for i in [1, 3, 7, 9]]
+
 ancestors = "-a" in sys.argv
 
 # given an integer, generate all children of it that are prime
@@ -38,9 +58,9 @@ ancestors = "-a" in sys.argv
 # uses a generator to be slightly better in general
 
 
-def get_prime_children(i: str):
+def get_prime_children(i: str, zeroes):
     for j in prepend_items:
-        k = j+i
+        k = j + i
         if isprime(int(k)):
             yield k
     if zeroes:
@@ -48,30 +68,68 @@ def get_prime_children(i: str):
             yield "0" + i
         elif len(list(takewhile(lambda x: x == "0", i))) < zeroes:
             yield "0" + i
-    if i[0] != "0":
+    if (not zeroes) or i[0] != "0":
         for j in append_items:
-            k = i+j
+            k = i + j
             if isprime(int(k)):
                 yield k
+
 
 # given a list of integers, return all of their children (tupled with the parent)
 # this tupling with the parent lets us quickly search back through the ancestry
 
 
-def get_all_prime_children(i_list: List[int]):
+def get_all_prime_children(i_list: List[int], zeroes):
     for i in i_list:
-        for j in get_prime_children(i):
+        for j in get_prime_children(i, zeroes):
             yield (j, int(i))
+
 
 # given a list of integers to start the list off on, continuously get all prime
 # nesting options.
 # combines parent lists together if and when it is required
 
 
-def driver(i_list: List[str]):
+def process_i_lists(q_i_lists: mp.Queue, q_init_children: mp.Queue, zeroes):
+    while True:
+        q_init_children.put(list(get_all_prime_children(q_i_lists.get(), zeroes)))
+        # for i in get_all_prime_children(q_i_lists.get(), zeroes):
+        #     q_init_children.put(i)
+        # q_init_children.put(None)
+
+def get_while_none_count_less_than(q : mp.Queue, none_count = 1):
+    while none_count > 0:
+        i = q.get()
+        if i is None:
+            none_count -= 1
+        else:
+            yield i
+
+
+def driver(
+    i_list: List[str], threads: int, q_i_lists: mp.Queue, q_init_children: mp.Queue
+):
+    """
+    The main driver for the program.
+    
+    Splits the input into chunks, distributes those chunks to processing threads,
+    reads back those results
+
+    """
     while i_list:
-        init_children = get_all_prime_children(i_list)
-        temp_children = {}
+        chunks_i_list = list(chunks(i_list, ceil(len(i_list) / threads)))
+        for chunk in chunks_i_list:
+            lchunk = list(chunk)
+            q_i_lists.put(lchunk)
+
+        init_children: Generator[Tuple[str, int], None, None] = None
+
+        for _ in range(len(chunks_i_list)):
+            init_children = combine_generators(init_children, q_init_children.get())
+        # init_children = get_while_none_count_less_than(q_init_children, len(chunks_i_list))
+
+        # init_children = get_all_prime_children(i_list)
+        temp_children: Dict[str, List[int]] = {}
         for (c, p) in init_children:
             tc = temp_children.get(c)
             if tc:
@@ -79,8 +137,7 @@ def driver(i_list: List[str]):
             else:
                 temp_children[c] = [p]
 
-        children = sorted([(i, temp_children[i])
-                          for i in temp_children.keys()])
+        children = [(i, temp_children[i]) for i in sorted(iter(temp_children))]
 
         for i in children:
             if i[0][0] != "0":
@@ -88,19 +145,29 @@ def driver(i_list: List[str]):
 
         i_list = list(map(lambda v: v[0], children))
 
+
 # get the full ancestry of a given value
 
 
 def get_ancestors(full_family: Dict[int, List[int]], descendant):
+    """
+    Given the dictionary of family values (child to parents) and a child,
+    return all the ancestors of the child.
+    """
     full_ancestors = [descendant]
     ancestors = [descendant]
 
     while ancestors:
-        ancestors = [i for j in map(
-            lambda i:full_family.get(i), ancestors) if j is not None for i in j]
+        ancestors = [
+            i
+            for j in map(lambda i: full_family.get(i), ancestors)
+            if j is not None
+            for i in j
+        ]
         full_ancestors += ancestors
 
     return remove_dup(full_ancestors)
+
 
 # given an integer and a function that outputs, output the pairings and also
 # return the child - parent dict
@@ -108,8 +175,25 @@ def get_ancestors(full_family: Dict[int, List[int]], descendant):
 
 def main(n: int, out):
     start_primes = list(filter(lambda x: isprime(int(x)), prepend_items))
+    zeroes = "-z" in sys.argv and get_int(
+        get_list(sys.argv, sys.argv.index("-z") + 1), inf
+    )
 
-    d = driver(start_primes)
+    q_i_lists = mp.Queue()
+    q_init_children = mp.Queue()
+    d = None
+    thread_count = 4
+    threads = []
+
+    for _ in range(thread_count):
+        p = mp.Process(
+            target=process_i_lists, args=(q_i_lists, q_init_children, zeroes)
+        )
+        p.daemon = True
+        p.start()
+        threads.append(p)
+
+    d = driver(start_primes, thread_count, q_i_lists, q_init_children)
 
     value_parent = None
 
@@ -118,12 +202,13 @@ def main(n: int, out):
 
     start_range, end_range = len(start_primes), n
     for (pos, i) in zip(range(min(len(start_primes), n)), start_primes):
-        out(f"{pos}: {i}")
+        out(f"{i}")
         if ancestors:
             value_parent[int(i)] = None
 
-    for (pos, i) in zip(range(start_range, end_range), d):
-        out(f"{pos}: {i}")
+    for (pos, i) in zip(tqdm(range(start_range, end_range)), d):
+        # out(f"{pos}: {i}")
+        out(f"{i}")
         if ancestors:
             value_parent[int(i[0])] = i[1]
 
@@ -142,7 +227,10 @@ if __name__ == "__main__":
     out = print
     if "-f" in sys.argv:
         with open("output.txt", "w") as f:
-            def out(s): return f.write(s + "\n")
+
+            def out(s):
+                return f.write(s + "\n")
+
             v = main(int(sys.argv[1]), out)
     else:
         v = main(int(sys.argv[1]), out)
@@ -152,7 +240,7 @@ if __name__ == "__main__":
 
     if "-p" in sys.argv:
         pindex = sys.argv.index("-p")
-        prime = int(sys.argv[pindex+1])
+        prime = int(sys.argv[pindex + 1])
         print(get_ancestors(v, prime))
 
     if "-l" in sys.argv:
