@@ -105,9 +105,19 @@ def get_while_none_count_less_than(q : mp.Queue, none_count = 1):
         else:
             yield i
 
+def prime_or_none(p, parent):
+    return (isprime(int(p)) and (p,parent)) or None
+
+def conditionally_add_zeroes(i,zeroes):
+    if zeroes:
+        if zeroes == inf:
+            return "0"+i
+        elif len(list(takewhile(lambda x: x == "0", i))) < zeroes:
+            return "0" + i
+
 
 def driver(
-    i_list: List[str], threads: int, q_i_lists: mp.Queue, q_init_children: mp.Queue
+    i_list: List[str], poolsize, zeroes
 ):
     """
     The main driver for the program.
@@ -116,34 +126,53 @@ def driver(
     reads back those results
 
     """
-    while i_list:
-        chunks_i_list = list(chunks(i_list, ceil(len(i_list) / threads)))
-        for chunk in chunks_i_list:
-            lchunk = list(chunk)
-            q_i_lists.put(lchunk)
+    
+    with mp.Pool(processes=4) as pool:
+        while i_list:
+            init_children: Generator[Tuple[str, int], None, None] = None
 
-        init_children: Generator[Tuple[str, int], None, None] = None
+            if zeroes:
+                def _temp(i):
+                    return conditionally_add_zeroes(i,zeroes)
+                init_children= combine_generators(init_children, pool.imap(_temp, i_list))
 
-        for _ in range(len(chunks_i_list)):
-            init_children = combine_generators(init_children, q_init_children.get())
-        # init_children = get_while_none_count_less_than(q_init_children, len(chunks_i_list))
+            for p in prepend_items:
+                def _temp(i):
+                    return prime_or_none(p+i,i)
+                init_children = combine_generators(init_children, pool.imap(_temp, i_list))
 
-        # init_children = get_all_prime_children(i_list)
-        temp_children: Dict[str, List[int]] = {}
-        for (c, p) in init_children:
-            tc = temp_children.get(c)
-            if tc:
-                temp_children[c].append(p)
-            else:
-                temp_children[c] = [p]
+            for a in append_items:
+                def _temp(i):
+                    return (i[0]!="0" and prime_or_none(i+a,i)) or None
+                init_children = combine_generators(init_children, pool.imap(_temp, i_list))
 
-        children = [(i, temp_children[i]) for i in sorted(iter(temp_children))]
+            init_children = filter(lambda i: i is not None,init_children)
+            # chunks_i_list = list(chunks(i_list, ceil(len(i_list) / threads)))
+            # for chunk in chunks_i_list:
+            #     lchunk = list(chunk)
+            #     q_i_lists.put(lchunk)
 
-        for i in children:
-            if i[0][0] != "0":
-                yield (int(i[0]), i[1])
 
-        i_list = list(map(lambda v: v[0], children))
+            # for _ in range(len(chunks_i_list)):
+            #     init_children = combine_generators(init_children, q_init_children.get())
+            # init_children = get_while_none_count_less_than(q_init_children, len(chunks_i_list))
+
+            # init_children = get_all_prime_children(i_list)
+            temp_children: Dict[str, List[int]] = {}
+            for (c, p) in init_children:
+                tc = temp_children.get(c)
+                if tc:
+                    temp_children[c].append(p)
+                else:
+                    temp_children[c] = [p]
+
+            children = [(i, temp_children[i]) for i in sorted(iter(temp_children))]
+
+            for i in children:
+                if i[0][0] != "0":
+                    yield (int(i[0]), i[1])
+
+            i_list = list(map(lambda v: v[0], children))
 
 
 # get the full ancestry of a given value
@@ -179,21 +208,21 @@ def main(n: int, out):
         get_list(sys.argv, sys.argv.index("-z") + 1), inf
     )
 
-    q_i_lists = mp.Queue()
-    q_init_children = mp.Queue()
-    d = None
-    thread_count = 4
-    threads = []
+    # q_i_lists = mp.Queue()
+    # q_init_children = mp.Queue()
+    # d = None
+    # thread_count = 4
+    # threads = []
 
-    for _ in range(thread_count):
-        p = mp.Process(
-            target=process_i_lists, args=(q_i_lists, q_init_children, zeroes)
-        )
-        p.daemon = True
-        p.start()
-        threads.append(p)
+    # for _ in range(thread_count):
+    #     p = mp.Process(
+    #         target=process_i_lists, args=(q_i_lists, q_init_children, zeroes)
+    #     )
+    #     p.daemon = True
+    #     p.start()
+    #     threads.append(p)
 
-    d = driver(start_primes, thread_count, q_i_lists, q_init_children)
+    d = driver(start_primes, 4, zeroes)
 
     value_parent = None
 
